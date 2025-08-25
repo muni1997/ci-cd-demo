@@ -1,66 +1,76 @@
 pipeline {
-  agent any
-  environment {
-    DOCKER_IMAGE = "YOUR_DOCKERHUB_USERNAME/ci-demo"
-  }
-  tools {
-    jdk 'jdk17'
-    maven 'maven3'
-  }
-  options {
-    buildDiscarder(logRotator(numToKeepStr: '20'))
-    timestamps()
-    ansiColor('xterm')
-  }
-  stages {
-    stage('Checkout') {
-      steps {
-        checkout scm
-      }
+    agent any
+
+    tools {
+        maven 'maven3'
+        jdk 'jdk17'
     }
-    stage('Build & Unit Test') {
-      steps {
-        sh 'mvn -B -DskipTests=false clean verify'
-        junit 'target/surefire-reports/*.xml'
-      }
+
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-creds')
+        SONARQUBE = 'MySonarQube'
+        APP_NAME = 'ci-demo'
+        DOCKER_HUB_REPO = 'munimohan123/ci-demo'
     }
-    stage('SonarQube Scan') {
-      steps {
-        withSonarQubeEnv('MySonarQube') {
-          sh 'mvn -B sonar:sonar -Dsonar.projectKey=ci-demo -Dsonar.projectName=ci-demo -Dsonar.token=$SONAR_AUTH_TOKEN'
+
+    stages {
+        stage('Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/muni1997/ci-cd-demo.git'
+            }
         }
-      }
-    }
-    stage('Quality Gate') {
-      steps {
-        timeout(time: 5, unit: 'MINUTES') {
-          waitForQualityGate abortPipeline: true
+
+        stage('Build with Maven') {
+            steps {
+                sh 'mvn clean package -DskipTests'
+            }
         }
-      }
-    }
-    stage('Docker Build') {
-      steps {
-        script {
-          sh 'echo Building Docker image ${DOCKER_IMAGE}:${BUILD_NUMBER}'
-          def app = docker.build("${DOCKER_IMAGE}:${env.BUILD_NUMBER}")
-          sh "docker tag ${DOCKER_IMAGE}:${env.BUILD_NUMBER} ${DOCKER_IMAGE}:latest"
+
+        stage('Unit Tests') {
+            steps {
+                sh 'mvn test'
+            }
+            post {
+                always {
+                    junit 'target/surefire-reports/*.xml'
+                }
+            }
         }
-      }
-    }
-    stage('Docker Push') {
-      steps {
-        script {
-          docker.withRegistry('https://index.docker.io/v1/', 'dockerhub-creds') {
-            sh "docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}"
-            sh "docker push ${DOCKER_IMAGE}:latest"
-          }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv("${SONARQUBE}") {
+                    sh 'mvn sonar:sonar -Dsonar.projectKey=ci-demo'
+                }
+            }
         }
-      }
+
+        stage("Quality Gate") {
+            steps {
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    docker.build("${DOCKER_HUB_REPO}:${BUILD_NUMBER}")
+                }
+            }
+        }
+
+        stage('Push to Docker Hub') {
+            steps {
+                script {
+                    docker.withRegistry('', DOCKERHUB_CREDENTIALS) {
+                        docker.image("${DOCKER_HUB_REPO}:${BUILD_NUMBER}").push()
+                        docker.image("${DOCKER_HUB_REPO}:${BUILD_NUMBER}").push('latest')
+                    }
+                }
+            }
+        }
     }
-  }
-  post {
-    always {
-      archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
-    }
-  }
 }
+
